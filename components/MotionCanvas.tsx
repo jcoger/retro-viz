@@ -2,12 +2,15 @@
 
 import { useEffect, useRef } from "react";
 
-type CanvasConfig = {
+export type PatternType = "concentric" | "radial" | "diagonal" | "noise";
+
+export type CanvasConfig = {
   colorA: string;
   colorB: string;
   speed: number;
   density: number;
   background: string;
+  pattern: PatternType;
 };
 
 type Props = {
@@ -103,8 +106,12 @@ export default function MotionCanvas({ config }: Props) {
       if (startTime === null) startTime = ts;
       const elapsed = (ts - startTime) * config.speed;
 
-      ctx.fillStyle = config.background;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (config.background === "transparent") {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      } else {
+        ctx.fillStyle = config.background;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
 
       for (const t of tiles) {
         const tileStart = t.dist * REVEAL_STAGGER;
