@@ -191,8 +191,10 @@ export default function MotionCanvas({ config }: Props) {
     };
 
     const resize = () => {
-      canvas.width  = canvas.offsetWidth;
-      canvas.height = canvas.offsetHeight;
+      // Use visualViewport when available — it tracks iOS Safari chrome
+      // show/hide accurately. Fall back to window.inner* on older browsers.
+      canvas.width  = window.visualViewport?.width  ?? window.innerWidth;
+      canvas.height = window.visualViewport?.height ?? window.innerHeight;
       buildGrid();
       buildNoiseCanvas();
       startTime = null;
@@ -200,6 +202,7 @@ export default function MotionCanvas({ config }: Props) {
 
     resize();
     window.addEventListener("resize", resize);
+    window.visualViewport?.addEventListener("resize", resize);
 
     // ── Draw: concentric grid ─────────────────────────────────────
     const drawConcentric = (elapsed: number) => {
@@ -365,6 +368,7 @@ export default function MotionCanvas({ config }: Props) {
     return () => {
       cancelAnimationFrame(rafRef.current);
       window.removeEventListener("resize", resize);
+      window.visualViewport?.removeEventListener("resize", resize);
     };
   }, [config]);
 

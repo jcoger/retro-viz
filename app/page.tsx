@@ -41,6 +41,21 @@ function HomeContent() {
   // Lazy initializer: reads URL on first render, falls back to defaults
   const [config, setConfig] = useState<CanvasConfig>(() => parseConfig(searchParams));
 
+  // iOS Safari: 100vh includes hidden browser chrome. Track real visible
+  // height via visualViewport (fires on chrome show/hide) + window resize.
+  const [vh, setVh] = useState<number | null>(null);
+  useEffect(() => {
+    const update = () =>
+      setVh(window.visualViewport?.height ?? window.innerHeight);
+    update();
+    window.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("resize", update);
+    };
+  }, []);
+
   // Sync config → URL without adding to browser history
   useEffect(() => {
     const params = new URLSearchParams({
@@ -55,7 +70,7 @@ function HomeContent() {
   }, [config]);
 
   return (
-    <main style={{ width: "100vw", height: "100vh" }}>
+    <main style={{ width: "100vw", height: vh ? `${vh}px` : "100svh" }}>
       <MotionCanvas config={config} />
       <ConfigPanel config={config} onChange={setConfig} />
     </main>

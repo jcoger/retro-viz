@@ -23,9 +23,16 @@ const BG_OPTIONS = [
 
 export default function ConfigPanel({ config, onChange }: Props) {
   const [collapsed, setCollapsed] = useState(false);
+  const [copied, setCopied]       = useState(false);
 
   const update = (partial: Partial<CanvasConfig>) =>
     onChange({ ...config, ...partial });
+
+  const copyLink = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
     <div
@@ -39,24 +46,60 @@ export default function ConfigPanel({ config, onChange }: Props) {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
+        // Lift entire panel above the iOS home indicator
+        paddingBottom: "env(safe-area-inset-bottom)",
       }}
     >
-      {/* Collapse toggle — always visible */}
-      <button
-        onClick={() => setCollapsed((c) => !c)}
-        aria-label={collapsed ? "Expand panel" : "Collapse panel"}
+      {/* Toolbar — frosted pill so buttons are legible over any canvas color */}
+      <div
         style={{
-          background: "none",
-          border: "none",
-          padding: "8px 0 6px",
-          cursor: "pointer",
           display: "flex",
           alignItems: "center",
-          justifyContent: "center",
+          gap: 4,
+          background: "rgba(8, 8, 8, 0.7)",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+          border: "1px solid rgba(255,255,255,0.09)",
+          borderRadius: 999,
+          padding: "4px 4px 4px 14px",
+          margin: "6px 0",
         }}
       >
-        <ChevronIcon up={!collapsed} />
-      </button>
+        <button
+          onClick={copyLink}
+          style={{
+            background: "none",
+            border: "none",
+            padding: "3px 8px",
+            color: copied ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.5)",
+            fontSize: 11,
+            letterSpacing: "0.06em",
+            cursor: "pointer",
+            transition: "color 0.2s",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {copied ? "Copied!" : "Copy link"}
+        </button>
+
+        {/* Divider */}
+        <div style={{ width: 1, height: 14, background: "rgba(255,255,255,0.1)", flexShrink: 0 }} />
+
+        <button
+          onClick={() => setCollapsed((c) => !c)}
+          aria-label={collapsed ? "Expand panel" : "Collapse panel"}
+          style={{
+            background: "none",
+            border: "none",
+            padding: "4px 10px",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          <ChevronIcon up={!collapsed} />
+        </button>
+      </div>
 
       {/* Main panel */}
       <div
