@@ -15,6 +15,11 @@ body {
 }
 
 @media (max-width: 768px) {
+  html,
+  body {
+    background: #000;
+  }
+
   .safe-top-bar {
     display: block;
     position: fixed;
