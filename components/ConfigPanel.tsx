@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { CanvasConfig, PatternType } from "./MotionCanvas";
 
 type Props = {
@@ -24,6 +24,14 @@ const BG_OPTIONS = [
 export default function ConfigPanel({ config, onChange }: Props) {
   const [collapsed, setCollapsed] = useState(false);
   const [copied, setCopied]       = useState(false);
+  const [isMobile, setIsMobile]   = useState(false);
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth <= 768);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   const update = (partial: Partial<CanvasConfig>) =>
     onChange({ ...config, ...partial });
@@ -39,14 +47,14 @@ export default function ConfigPanel({ config, onChange }: Props) {
       style={{
         position: "fixed",
         bottom: 0,
-        left: "50%",
-        transform: "translateX(-50%)",
-        width: "min(600px, 96vw)",
+        left: isMobile ? 0 : "50%",
+        transform: isMobile ? "none" : "translateX(-50%)",
+        width: isMobile ? "100vw" : "min(600px, 96vw)",
         zIndex: 100,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        // Lift entire panel above the iOS home indicator
+        background: isMobile ? "#000" : "transparent",
         paddingBottom: "env(safe-area-inset-bottom)",
       }}
     >
@@ -108,9 +116,10 @@ export default function ConfigPanel({ config, onChange }: Props) {
           background: "rgba(8, 8, 8, 0.78)",
           backdropFilter: "blur(12px)",
           WebkitBackdropFilter: "blur(12px)",
-          border: "1px solid rgba(255,255,255,0.07)",
+          border: isMobile ? "none" : "1px solid rgba(255,255,255,0.07)",
           borderBottom: "none",
-          borderRadius: "14px 14px 0 0",
+          borderTop: isMobile ? "1px solid rgba(255,255,255,0.05)" : undefined,
+          borderRadius: isMobile ? 0 : "14px 14px 0 0",
           padding: collapsed ? 0 : "18px 20px 22px",
           maxHeight: collapsed ? 0 : 300,
           overflow: "hidden",

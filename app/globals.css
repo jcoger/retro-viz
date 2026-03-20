@@ -8,3 +8,21 @@ body {
   padding: 0;
   overflow: hidden;
 }
+
+/* Mobile black frame — safe area top bar */
+.safe-top-bar {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .safe-top-bar {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: env(safe-area-inset-top);
+    background: #000;
+    z-index: 200;
+  }
+}

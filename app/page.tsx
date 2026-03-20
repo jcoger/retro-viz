@@ -71,6 +71,7 @@ function HomeContent() {
 
   return (
     <main style={{ width: "100vw", height: vh ? `${vh}px` : "100svh" }}>
+      <div className="safe-top-bar" />
       <MotionCanvas config={config} />
       <ConfigPanel config={config} onChange={setConfig} />
     </main>
