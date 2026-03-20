@@ -18,9 +18,8 @@ type Props = {
 };
 
 // ── Concentric ────────────────────────────────────────────────────
-const TILE_SIZE = 32;
 const GAP = 1;
-const CELL = TILE_SIZE + GAP;
+const DENSITY_TILE_SIZES: Record<number, number> = { 1: 48, 2: 32, 3: 16 };
 const REVEAL_STAGGER = 1200;
 const TILE_FADE = 500;
 const BREATH_FREQ = (2 * Math.PI) / 3000;
@@ -151,11 +150,14 @@ export default function MotionCanvas({ config }: Props) {
     const [rA, gA, bA] = hexToRgb(config.colorA);
     const [rB, gB, bB] = hexToRgb(config.colorB);
 
+    const tileSize = DENSITY_TILE_SIZES[config.density] ?? 32;
+    const cellSize = tileSize + GAP;
+
     const buildGrid = () => {
       const w = canvas.width;
       const h = canvas.height;
-      const cols = Math.ceil(w / CELL) + 1;
-      const rows = Math.ceil(h / CELL) + 1;
+      const cols = Math.ceil(w / cellSize) + 1;
+      const rows = Math.ceil(h / cellSize) + 1;
       const cx = (cols - 1) / 2;
       const cy = (rows - 1) / 2;
       const maxDist = Math.sqrt(cx * cx + cy * cy);
@@ -167,8 +169,8 @@ export default function MotionCanvas({ config }: Props) {
           const dy = row - cy;
           const dist = maxDist > 0 ? Math.sqrt(dx * dx + dy * dy) / maxDist : 0;
           tiles.push({
-            x: col * CELL,
-            y: row * CELL,
+            x: col * cellSize,
+            y: row * cellSize,
             dist,
             r: Math.round(lerp(rA, rB, dist)),
             g: Math.round(lerp(gA, gB, dist)),
@@ -218,7 +220,7 @@ export default function MotionCanvas({ config }: Props) {
 
         if (opacity <= 0) continue;
         ctx.fillStyle = `rgba(${t.r},${t.g},${t.b},${opacity.toFixed(3)})`;
-        ctx.fillRect(t.x, t.y, TILE_SIZE, TILE_SIZE);
+        ctx.fillRect(t.x, t.y, tileSize, tileSize);
       }
     };
 
