@@ -1,52 +1,102 @@
 "use client";
 
-import { Suspense, useState, useEffect } from "react";
+import { Suspense, useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
-import MotionCanvas from "@/components/MotionCanvas";
-import ConfigPanel from "@/components/ConfigPanel";
-import type { CanvasConfig, PatternType } from "@/components/MotionCanvas";
+import VisualCanvas, { type VisualMode } from "@/components/VisualCanvas";
+import HardwarePanel from "@/components/HardwarePanel";
+import type { YouTubePlayerHandle } from "@/components/YouTubePlayer";
+import { THEMES, DEFAULT_THEME } from "@/lib/themes";
 
-const DEFAULT_CONFIG: CanvasConfig = {
-  colorA:     "#4400FF",
-  colorB:     "#888888",
-  speed:      1.0,
-  density:    2,
-  background: "#000000",
-  pattern:    "concentric",
-};
+// ── Defaults ──────────────────────────────────────────────────────
 
-const VALID_PATTERNS: PatternType[] = ["concentric", "radial", "diagonal", "noise"];
+const DEFAULT_SENSITIVITY = 0.5;
+const DEFAULT_SPEED       = 0.5;
+const DEFAULT_ZOOM        = 0.5;
+const DEFAULT_MODE: VisualMode = "oscilloscope";
+const DEFAULT_SCANLINES   = true;
 
-function parseConfig(params: ReturnType<typeof useSearchParams>): CanvasConfig {
-  const rawPattern = params.get("pattern") ?? "";
-  const speed      = parseFloat(params.get("speed")   ?? "");
-  const density    = parseInt(params.get("density")   ?? "");
+function clamp01(v: number) { return Math.max(0, Math.min(1, v)); }
 
-  return {
-    colorA:     params.get("colorA")     ?? DEFAULT_CONFIG.colorA,
-    colorB:     params.get("colorB")     ?? DEFAULT_CONFIG.colorB,
-    background: params.get("background") ?? DEFAULT_CONFIG.background,
-    speed:      isNaN(speed)   ? DEFAULT_CONFIG.speed   : speed,
-    density:    isNaN(density) ? DEFAULT_CONFIG.density : density,
-    pattern:    VALID_PATTERNS.includes(rawPattern as PatternType)
-                  ? (rawPattern as PatternType)
-                  : DEFAULT_CONFIG.pattern,
-  };
-}
+// ── Inner component (needs useSearchParams, so must be inside Suspense) ───
 
-// ── Inner component — useSearchParams requires a Suspense ancestor ─
 function HomeContent() {
   const searchParams = useSearchParams();
 
-  // Lazy initializer: reads URL on first render, falls back to defaults
-  const [config, setConfig] = useState<CanvasConfig>(() => parseConfig(searchParams));
+  // ── Theme ────────────────────────────────────────────────────
+  const [themeId, setThemeId] = useState<string>(() => {
+    const raw = searchParams.get("theme") ?? "";
+    return raw in THEMES ? raw : DEFAULT_THEME;
+  });
+  const theme = THEMES[themeId];
 
-  // iOS Safari: 100vh includes hidden browser chrome. Track real visible
-  // height via visualViewport (fires on chrome show/hide) + window resize.
+  // ── Transport ────────────────────────────────────────────────
+  const [youtubeUrl, setYoutubeUrl] = useState(() => searchParams.get("url") ?? "");
+  const [isPlaying,  setIsPlaying]  = useState(false);
+
+  // ── Knobs ────────────────────────────────────────────────────
+  const [sensitivity, setSensitivity] = useState(() =>
+    clamp01(parseFloat(searchParams.get("sensitivity") ?? "") || DEFAULT_SENSITIVITY)
+  );
+  const [speed, setSpeed] = useState(() =>
+    clamp01(parseFloat(searchParams.get("speed") ?? "") || DEFAULT_SPEED)
+  );
+  const [zoom, setZoom] = useState(() =>
+    clamp01(parseFloat(searchParams.get("zoom") ?? "") || DEFAULT_ZOOM)
+  );
+
+  // ── Mode / scanlines ─────────────────────────────────────────
+  const [mode, setMode] = useState<VisualMode>(() => {
+    const raw = searchParams.get("mode") ?? "";
+    return (["oscilloscope", "spectrum", "radar", "stars"] as VisualMode[]).includes(raw as VisualMode)
+      ? (raw as VisualMode)
+      : DEFAULT_MODE;
+  });
+  const [scanlines, setScanlines] = useState(() => {
+    const raw = searchParams.get("scanlines");
+    return raw === null ? DEFAULT_SCANLINES : raw === "1";
+  });
+
+  // ── Audio data ───────────────────────────────────────────────
+  // Stable buffer refs passed directly to VisualCanvas — no re-renders when they fill.
+  const freqBuf  = useRef<Uint8Array<ArrayBuffer>>(new Uint8Array(256) as Uint8Array<ArrayBuffer>);
+  const timeBuf  = useRef<Uint8Array<ArrayBuffer>>(new Uint8Array(256) as Uint8Array<ArrayBuffer>);
+  const playerRef = useRef<YouTubePlayerHandle>(null);
+
+  // React state for volume — throttled to ~20 FPS to limit re-renders
+  const [volume, setVolume] = useState(0);
+
+  useEffect(() => {
+    let raf: number;
+    let lastVolUpdate = 0;
+
+    const loop = (ts: number) => {
+      const handle = playerRef.current;
+      if (handle?.isActive) {
+        const freq = handle.getFrequencyData();
+        freqBuf.current.set(freq);
+
+        const time = handle.getTimeDomainData();
+        timeBuf.current.set(time);
+
+        if (ts - lastVolUpdate > 50) {
+          let sum = 0;
+          for (let i = 0; i < freq.length; i++) sum += freq[i] * freq[i];
+          const rms = Math.sqrt(sum / freq.length) / 255;
+          setVolume(rms);
+          lastVolUpdate = ts;
+        }
+      }
+      raf = requestAnimationFrame(loop);
+    };
+
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // ── iOS viewport height ───────────────────────────────────────
   const [vh, setVh] = useState<number | null>(null);
   useEffect(() => {
-    const update = () =>
-      setVh(window.visualViewport?.height ?? window.innerHeight);
+    const update = () => setVh(window.visualViewport?.height ?? window.innerHeight);
     update();
     window.addEventListener("resize", update);
     window.visualViewport?.addEventListener("resize", update);
@@ -56,29 +106,76 @@ function HomeContent() {
     };
   }, []);
 
-  // Sync config → URL without adding to browser history
+  // ── URL sync ──────────────────────────────────────────────────
   useEffect(() => {
     const params = new URLSearchParams({
-      colorA:     config.colorA,
-      colorB:     config.colorB,
-      speed:      String(config.speed),
-      density:    String(config.density),
-      background: config.background,
-      pattern:    config.pattern,
+      theme:       themeId,
+      url:         youtubeUrl,
+      sensitivity: String(sensitivity),
+      speed:       String(speed),
+      zoom:        String(zoom),
+      mode,
+      scanlines:   scanlines ? "1" : "0",
     });
     window.history.replaceState(null, "", `?${params.toString()}`);
-  }, [config]);
+  }, [themeId, youtubeUrl, sensitivity, speed, zoom, mode, scanlines]);
+
+  // ── Stable callbacks for playing state ───────────────────────
+  const handlePlayingChange = useCallback((playing: boolean) => {
+    setIsPlaying(playing);
+  }, []);
 
   return (
-    <main style={{ width: "100vw", height: vh ? `${vh}px` : "100svh" }}>
-      <div className="safe-top-bar" />
-      <MotionCanvas config={config} />
-      <ConfigPanel config={config} onChange={setConfig} />
+    <main
+      style={{
+        width:      "100vw",
+        height:     vh ? `${vh}px` : "100svh",
+        background: theme.screenBg,
+        position:   "relative",
+        overflow:   "hidden",
+      }}
+    >
+      {/* ── Visualizer canvas — fills the full viewport ── */}
+      <VisualCanvas
+        frequencyData={freqBuf.current}
+        timeDomainData={timeBuf.current}
+        beamCount={1}
+        beamSpread={0}
+        sensitivity={sensitivity}
+        speed={speed}
+        zoom={zoom}
+        mode={mode}
+        scanlines={scanlines}
+        theme={theme}
+      />
+
+      {/* ── Hardware control panel — fixed to bottom ── */}
+      <HardwarePanel
+        theme={theme}
+        onThemeChange={setThemeId}
+        youtubeUrl={youtubeUrl}
+        onUrlChange={setYoutubeUrl}
+        isPlaying={isPlaying}
+        onPlayingChange={handlePlayingChange}
+        playerRef={playerRef}
+        sensitivity={sensitivity}
+        onSensitivityChange={setSensitivity}
+        speed={speed}
+        onSpeedChange={setSpeed}
+        zoom={zoom}
+        onZoomChange={setZoom}
+        scanlines={scanlines}
+        onScanlinesChange={setScanlines}
+        mode={mode}
+        onModeChange={setMode}
+        volume={volume}
+      />
     </main>
   );
 }
 
-// ── Page — Suspense required for useSearchParams in App Router ─────
+// ── Root export ───────────────────────────────────────────────────
+
 export default function Home() {
   return (
     <Suspense fallback={null}>
