@@ -30,7 +30,11 @@ function HomeContent() {
   const theme = THEMES[themeId];
 
   // ── Transport ────────────────────────────────────────────────
-  const [youtubeUrl, setYoutubeUrl] = useState(() => searchParams.get("url") ?? "");
+  // Fall back to the theme's default video so the visualizer starts with
+  // something loaded rather than an empty input.
+  const [youtubeUrl, setYoutubeUrl] = useState(
+    () => searchParams.get("url") ?? THEMES[themeId].defaultVideo
+  );
   const [isPlaying,  setIsPlaying]  = useState(false);
 
   // ── Knobs ────────────────────────────────────────────────────

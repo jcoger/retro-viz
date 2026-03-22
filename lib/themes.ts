@@ -37,6 +37,9 @@ export type Theme = {
   scanlines: boolean;
   scanlinesOpacity: number;  // 0–1
   crtCurvature: boolean;     // corner distortion on the screen
+
+  // ── Content ───────────────────────────────────────────────────
+  defaultVideo: string;      // YouTube video ID to auto-load on start (empty = none)
 };
 
 // ── Theme definitions ─────────────────────────────────────────────
@@ -71,6 +74,7 @@ const retro: Theme = {
   scanlines:        true,
   scanlinesOpacity: 0.07,
   crtCurvature:     false,
+  defaultVideo:     "", // paste a YouTube video ID here
 };
 
 const amber: Theme = {
@@ -103,6 +107,7 @@ const amber: Theme = {
   scanlines:        true,
   scanlinesOpacity: 0.07,
   crtCurvature:     false,
+  defaultVideo:     "", // paste a YouTube video ID here
 };
 
 export const THEMES: Record<string, Theme> = { retro, amber };

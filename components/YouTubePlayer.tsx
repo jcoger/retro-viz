@@ -27,8 +27,6 @@ interface YTPlayerOptions {
 interface YTPlayer {
   playVideo(): void;
   pauseVideo(): void;
-  cueVideoById(videoId: string): void;
-  getPlayerState(): number;
   getIframe(): HTMLIFrameElement;
   destroy(): void;
 }
@@ -45,7 +43,9 @@ declare global {
 
 // ── Public API ────────────────────────────────────────────────────
 
-export type AudioMode = "none" | "youtube" | "microphone";
+// "youtube" = player loaded (even if CORS keeps analyser in silent mode)
+// "none"    = no video loaded yet
+export type AudioMode = "none" | "youtube";
 
 export type YouTubePlayerHandle = {
   getFrequencyData:  () => Uint8Array<ArrayBuffer>;
@@ -57,8 +57,8 @@ export type YouTubePlayerHandle = {
 };
 
 type Props = {
-  youtubeUrl: string;
-  theme: Theme;
+  youtubeUrl:        string;
+  theme:             Theme;
   onAudioModeChange?: (mode: AudioMode) => void;
   onPlayingChange?:   (playing: boolean) => void;
 };
@@ -94,9 +94,7 @@ function extractVideoId(input: string): string | null {
       if (u.pathname.startsWith("/embed/"))  return u.pathname.split("/")[2] || null;
       return u.searchParams.get("v");
     }
-  } catch {
-    // not a valid URL — already handled by bare-ID check
-  }
+  } catch { /* not a URL */ }
   return null;
 }
 
@@ -104,17 +102,17 @@ function extractVideoId(input: string): string | null {
 
 const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
   ({ youtubeUrl, theme, onAudioModeChange, onPlayingChange }, ref) => {
+
     const ytWrapperRef = useRef<HTMLDivElement>(null);
     const ytPlayerRef  = useRef<YTPlayer | null>(null);
 
-    const audioCtxRef         = useRef<AudioContext | null>(null);
-    const analyserRef         = useRef<AnalyserNode | null>(null);
-    const dataArrayRef        = useRef<Uint8Array<ArrayBuffer>>(new Uint8Array(256) as Uint8Array<ArrayBuffer>);
-    const timeDomainArrayRef  = useRef<Uint8Array<ArrayBuffer>>(new Uint8Array(256) as Uint8Array<ArrayBuffer>);
-    const micStreamRef        = useRef<MediaStream | null>(null);
-    const audioInitRef        = useRef(false);
+    // Web Audio — created once on mount, lives for component lifetime
+    const audioCtxRef        = useRef<AudioContext | null>(null);
+    const analyserRef        = useRef<AnalyserNode | null>(null);
+    const dataArrayRef       = useRef<Uint8Array<ArrayBuffer>>(new Uint8Array(256) as Uint8Array<ArrayBuffer>);
+    const timeDomainArrayRef = useRef<Uint8Array<ArrayBuffer>>(new Uint8Array(256) as Uint8Array<ArrayBuffer>);
 
-    // Stable ref for onPlayingChange — avoids stale closure in YT event handlers
+    // Stable ref so YT event callbacks never close over a stale onPlayingChange
     const onPlayingChangeRef = useRef(onPlayingChange);
     useEffect(() => { onPlayingChangeRef.current = onPlayingChange; }, [onPlayingChange]);
 
@@ -138,15 +136,45 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
       },
       isActive:  audioMode !== "none",
       audioMode,
-      play:  () => { void handlePlay(); },
-      pause: () => handlePause(),
+      play:  () => { handlePlay(); },
+      pause: () => { handlePause(); },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }), [audioMode]);
 
-    // ── Load / swap YouTube player ─────────────────────────────────
+    // ── AudioContext — created once on mount ──────────────────────
+    // Starts suspended on most browsers; resumes on first user interaction.
+    useEffect(() => {
+      const ctx = new AudioContext();
+      audioCtxRef.current = ctx;
+
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.8;
+      analyserRef.current = analyser;
+      dataArrayRef.current       = new Uint8Array(analyser.frequencyBinCount) as Uint8Array<ArrayBuffer>;
+      timeDomainArrayRef.current = new Uint8Array(analyser.fftSize)            as Uint8Array<ArrayBuffer>;
+
+      // Resume on the first interaction anywhere on the page — this satisfies
+      // the browser's autoplay policy without requiring a specific button press.
+      const resume = () => { ctx.resume().catch(() => {}); };
+      document.addEventListener("click",      resume, { once: true });
+      document.addEventListener("keydown",    resume, { once: true });
+      document.addEventListener("touchstart", resume, { once: true, passive: true });
+
+      return () => {
+        document.removeEventListener("click",      resume);
+        document.removeEventListener("keydown",    resume);
+        document.removeEventListener("touchstart", resume);
+        ctx.close().catch(() => {});
+        ytPlayerRef.current?.destroy();
+      };
+    }, []); // runs once
+
+    // ── YouTube player — (re)created when videoId changes ─────────
     useEffect(() => {
       if (!videoId) {
         setIsReady(false);
+        setAudioMode("none");
         setStatusMsg(youtubeUrl.trim() ? "Invalid URL" : "Paste a YouTube URL");
         return;
       }
@@ -170,24 +198,55 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
           videoId,
           width: 320,
           height: 180,
-          playerVars: { controls: 0, disablekb: 1, fs: 0, modestbranding: 1, rel: 0, playsinline: 1 },
+          playerVars: {
+            controls: 0, disablekb: 1, fs: 0,
+            modestbranding: 1, rel: 0, playsinline: 1,
+          },
           events: {
-            onReady: () => {
-              if (!cancelled) {
-                setIsReady(true);
-                setStatusMsg("Ready — press Play");
+            onReady: (e) => {
+              if (cancelled) return;
+              setIsReady(true);
+
+              // Mark as "youtube" mode — the analyser runs (silently if CORS blocks it)
+              const mode: AudioMode = "youtube";
+              setAudioMode(mode);
+              onAudioModeChange?.(mode);
+
+              // Attempt to tap the iframe video element via Web Audio.
+              // YouTube embeds are cross-origin so this always throws SecurityError.
+              // The catch leaves the analyser unconnected → silent mode (flat zeros).
+              const ctx     = audioCtxRef.current;
+              const analyser = analyserRef.current;
+              if (ctx && analyser) {
+                try {
+                  const iframe  = e.target.getIframe();
+                  const videoEl = iframe.contentDocument
+                    ?.querySelector("video") as HTMLVideoElement | null;
+                  if (!videoEl) throw new Error("CORS");
+                  const source = ctx.createMediaElementSource(videoEl);
+                  source.connect(analyser);
+                  source.connect(ctx.destination);
+                  setStatusMsg("Audio connected");
+                } catch {
+                  // Expected — YouTube CORS. Analyser returns flat zeros.
+                  setStatusMsg("Auto-playing…");
+                }
               }
+
+              // Auto-play immediately when the player is ready
+              e.target.playVideo();
             },
+
             onStateChange: ({ data }) => {
-              const playing = data === 1;
-              onPlayingChangeRef.current?.(playing);
-              if (data === 0) setStatusMsg("Ended");
-              if (data === 2) setStatusMsg("Paused");
+              // YT.PlayerState: ENDED=0 PLAYING=1 PAUSED=2
+              onPlayingChangeRef.current?.(data === 1);
               if (data === 1) setStatusMsg("Playing");
+              if (data === 2) setStatusMsg("Paused");
+              if (data === 0) setStatusMsg("Ended");
             },
+
             onError: () => {
-              if (!cancelled)
-                setStatusMsg("YouTube error — try another video");
+              if (!cancelled) setStatusMsg("YouTube error — try another video");
             },
           },
         });
@@ -197,107 +256,38 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [videoId]);
 
-    // ── Audio init ────────────────────────────────────────────────
-    const initAudio = useCallback(async () => {
-      if (audioInitRef.current) {
-        if (audioCtxRef.current?.state === "suspended")
-          await audioCtxRef.current.resume();
-        return;
-      }
-      audioInitRef.current = true;
-
-      const ctx = new AudioContext();
-      audioCtxRef.current = ctx;
-
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.8;
-      analyserRef.current = analyser;
-      dataArrayRef.current       = new Uint8Array(analyser.frequencyBinCount) as Uint8Array<ArrayBuffer>;
-      timeDomainArrayRef.current = new Uint8Array(analyser.fftSize)            as Uint8Array<ArrayBuffer>;
-
-      let connected = false;
-      try {
-        const iframe = ytPlayerRef.current?.getIframe();
-        if (!iframe) throw new Error("no iframe");
-        const videoEl = iframe.contentDocument?.querySelector("video") as HTMLVideoElement | null;
-        if (!videoEl) throw new Error("video element unreachable (CORS)");
-        const source = ctx.createMediaElementSource(videoEl);
-        source.connect(analyser);
-        source.connect(ctx.destination);
-        connected = true;
-        const mode: AudioMode = "youtube";
-        setAudioMode(mode);
-        onAudioModeChange?.(mode);
-        setStatusMsg("YouTube audio connected");
-      } catch { /* expected CORS failure — fall through */ }
-
-      if (!connected) {
-        try {
-          setStatusMsg("Requesting microphone…");
-          const stream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-            video: false,
-          });
-          micStreamRef.current = stream;
-          const source = ctx.createMediaStreamSource(stream);
-          source.connect(analyser);
-          const mode: AudioMode = "microphone";
-          setAudioMode(mode);
-          onAudioModeChange?.(mode);
-          setStatusMsg("Microphone active");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "permission denied";
-          setStatusMsg(`No audio source: ${msg}`);
-          audioInitRef.current = false;
-          ctx.close().catch(() => {});
-          audioCtxRef.current = null;
-          return;
-        }
-      }
-
-      if (ctx.state === "suspended") await ctx.resume();
-    }, [onAudioModeChange]);
-
-    const handlePlay = useCallback(async () => {
-      if (!isReady) return;
-      await initAudio();
+    // ── Play / Pause ──────────────────────────────────────────────
+    const handlePlay = useCallback(() => {
+      // Also a good opportunity to resume AudioContext if the page listener
+      // fired before the context was created.
+      audioCtxRef.current?.resume().catch(() => {});
       ytPlayerRef.current?.playVideo();
-    }, [initAudio, isReady]);
+    }, []);
 
     const handlePause = useCallback(() => {
       ytPlayerRef.current?.pauseVideo();
-    }, []);
-
-    // ── Cleanup ───────────────────────────────────────────────────
-    useEffect(() => {
-      return () => {
-        micStreamRef.current?.getTracks().forEach((t) => t.stop());
-        audioCtxRef.current?.close().catch(() => {});
-        ytPlayerRef.current?.destroy();
-      };
     }, []);
 
     // ── Render ────────────────────────────────────────────────────
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
 
-        {/* Hidden YouTube player */}
+        {/* Hidden YouTube player — off-screen, invisible */}
         <div
           ref={ytWrapperRef}
           style={{
             position: "absolute", left: -9999, top: -9999,
-            width: 320, height: 180, opacity: 0,
-            pointerEvents: "none", overflow: "hidden",
+            width: 320, height: 180,
+            opacity: 0, pointerEvents: "none", overflow: "hidden",
           }}
         />
 
-        {/* Status + audio mode badge */}
+        {/* Status line + audio mode badge */}
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span
             style={{
-              fontFamily:   theme.fontLabel,
-              fontSize:     9,
+              fontFamily:    theme.fontLabel,
+              fontSize:      9,
               letterSpacing: "0.07em",
               textTransform: "uppercase",
               color:         audioMode !== "none" ? theme.textSecondary : theme.textDim,
@@ -308,7 +298,7 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
             {statusMsg}
           </span>
 
-          {audioMode !== "none" && (
+          {isReady && (
             <span
               style={{
                 flexShrink:    0,
@@ -322,7 +312,7 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
                 borderRadius:  2,
               }}
             >
-              {audioMode === "microphone" ? "MIC" : "YT"}
+              YT
             </span>
           )}
         </div>
