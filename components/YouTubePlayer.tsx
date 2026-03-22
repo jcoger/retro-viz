@@ -128,7 +128,11 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
     const timeDomainArrayRef = useRef<Uint8Array<ArrayBuffer>>(new Uint8Array(256) as Uint8Array<ArrayBuffer>);
 
     // Interval that drives synthetic waveform data after CORS blocks direct audio
-    const synthIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const synthIntervalRef     = useRef<ReturnType<typeof setInterval> | null>(null);
+    // True only when the AnalyserNode is actually connected to an audio source.
+    // Guards getFrequencyData / getTimeDomainData against calling getByteXxxData
+    // on an unconnected analyser, which would zero out the synthetic buffer.
+    const analyserConnectedRef = useRef(false);
 
     // Stable ref so YT event callbacks never close over a stale onPlayingChange
     const onPlayingChangeRef = useRef(onPlayingChange);
@@ -143,12 +147,12 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
     // ── Expose handle ─────────────────────────────────────────────
     useImperativeHandle(ref, () => ({
       getFrequencyData: () => {
-        if (analyserRef.current)
+        if (analyserRef.current && analyserConnectedRef.current)
           analyserRef.current.getByteFrequencyData(dataArrayRef.current);
         return dataArrayRef.current;
       },
       getTimeDomainData: () => {
-        if (analyserRef.current)
+        if (analyserRef.current && analyserConnectedRef.current)
           analyserRef.current.getByteTimeDomainData(timeDomainArrayRef.current);
         return timeDomainArrayRef.current;
       },
@@ -245,6 +249,7 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
                   const source = ctx.createMediaElementSource(videoEl);
                   source.connect(analyser);
                   source.connect(ctx.destination);
+                  analyserConnectedRef.current = true;
                   setStatusMsg("Audio connected");
                 } catch {
                   // Expected — YouTube CORS blocks direct AudioContext access.
