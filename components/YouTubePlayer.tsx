@@ -28,6 +28,8 @@ interface YTPlayer {
   playVideo(): void;
   pauseVideo(): void;
   getIframe(): HTMLIFrameElement;
+  getVolume(): number;      // 0–100 (user volume setting)
+  getCurrentTime(): number; // seconds into playback
   destroy(): void;
 }
 
@@ -98,6 +100,19 @@ function extractVideoId(input: string): string | null {
   return null;
 }
 
+// ── Synthetic waveform constants ─────────────────────────────────
+// Used when CORS blocks direct AudioContext access. Four harmonics at
+// co-prime frequency multiples produce a complex, non-repeating waveform.
+
+const HARMONICS = [
+  { freqMult:  3, amp: 1.00, phaseRate: 0.80 },
+  { freqMult:  7, amp: 0.45, phaseRate: 1.30 },
+  { freqMult: 11, amp: 0.20, phaseRate: 2.10 },
+  { freqMult: 17, amp: 0.08, phaseRate: 3.70 },
+] as const;
+
+const HARMONICS_TOTAL_AMP = HARMONICS.reduce((s, h) => s + h.amp, 0); // ≈ 1.73
+
 // ── Component ─────────────────────────────────────────────────────
 
 const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
@@ -111,6 +126,9 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
     const analyserRef        = useRef<AnalyserNode | null>(null);
     const dataArrayRef       = useRef<Uint8Array<ArrayBuffer>>(new Uint8Array(256) as Uint8Array<ArrayBuffer>);
     const timeDomainArrayRef = useRef<Uint8Array<ArrayBuffer>>(new Uint8Array(256) as Uint8Array<ArrayBuffer>);
+
+    // Interval that drives synthetic waveform data after CORS blocks direct audio
+    const synthIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     // Stable ref so YT event callbacks never close over a stale onPlayingChange
     const onPlayingChangeRef = useRef(onPlayingChange);
@@ -165,6 +183,7 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
         document.removeEventListener("click",      resume);
         document.removeEventListener("keydown",    resume);
         document.removeEventListener("touchstart", resume);
+        if (synthIntervalRef.current) clearInterval(synthIntervalRef.current);
         ctx.close().catch(() => {});
         ytPlayerRef.current?.destroy();
       };
@@ -228,8 +247,49 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
                   source.connect(ctx.destination);
                   setStatusMsg("Audio connected");
                 } catch {
-                  // Expected — YouTube CORS. Analyser returns flat zeros.
-                  setStatusMsg("Auto-playing…");
+                  // Expected — YouTube CORS blocks direct AudioContext access.
+                  // Instead, drive the visualiser with synthetic data derived from
+                  // the player's own getVolume() and getCurrentTime() values.
+                  // The interval runs at ~60 fps, keeping the buffers fresh each frame.
+                  if (synthIntervalRef.current) clearInterval(synthIntervalRef.current);
+
+                  synthIntervalRef.current = setInterval(() => {
+                    const player = ytPlayerRef.current;
+                    if (!player) return;
+
+                    const vol         = (player.getVolume() ?? 100) / 100; // 0–1
+                    const currentTime =  player.getCurrentTime() ?? 0;
+
+                    const timeBuf = timeDomainArrayRef.current;
+                    const freqBuf = dataArrayRef.current;
+
+                    // ── Time domain: sum of harmonics ───────────────────────
+                    // Each harmonic uses currentTime as its phase clock so the
+                    // waveform evolves continuously as the video plays.
+                    for (let i = 0; i < timeBuf.length; i++) {
+                      const t = i / timeBuf.length; // position in buffer, 0–1
+                      let sample = 0;
+                      for (const h of HARMONICS) {
+                        sample +=
+                          Math.sin(2 * Math.PI * h.freqMult * t + currentTime * h.phaseRate) *
+                          h.amp;
+                      }
+                      sample /= HARMONICS_TOTAL_AMP;              // normalize to [-1, 1]
+                      timeBuf[i] = Math.round(128 + sample * vol * 127);
+                    }
+
+                    // ── Frequency domain: gaussian bell curve ───────────────
+                    // Center bin and peak both scale with volume so louder
+                    // content pushes energy toward higher frequencies.
+                    const centerBin = 15 + vol * 70;
+                    const width     = 15 + vol * 12;
+                    const peak      = vol * 210;
+
+                    for (let i = 0; i < freqBuf.length; i++) {
+                      const g = Math.exp(-((i - centerBin) ** 2) / (2 * width ** 2));
+                      freqBuf[i] = Math.round(g * peak);
+                    }
+                  }, Math.round(1000 / 60));
                 }
               }
 
@@ -252,7 +312,15 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, Props>(
         });
       });
 
-      return () => { cancelled = true; };
+      return () => {
+        cancelled = true;
+        // Clear the synthetic tick so it doesn't write into buffers for a
+        // player that has already been torn down.
+        if (synthIntervalRef.current) {
+          clearInterval(synthIntervalRef.current);
+          synthIntervalRef.current = null;
+        }
+      };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [videoId]);
 
